@@ -1,0 +1,118 @@
+#!/bin/bash
+
+usage() {
+  cat << EOS >&2
+fflogin
+  AWS Session Manager EC2 login
+USAGE:
+  fflogin [options]
+OPTIONS:
+  -L <port:host:hostport>  Local Port fowarding
+  -R <port:host:hostport>  Remote Port fowarding
+  -p <profilename>         Aws Profile name
+  -h, --help               Show this help message.
+AUTHOR:
+  kory- (https://github.com/kory-)
+EOS
+}
+
+invalid() {
+  usage
+  echo
+  echo "$@" 1>&2
+  exit 1
+}
+
+while (( $# > 0 ))
+do
+  case $1 in
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    -L)
+      if [[ -n "$LOCAL" ]]; then
+        invalid "Duplicated 'Local Port fowarding' option."
+        exit 1
+      elif [[ -n "$REMOTE" ]]; then
+        invalid "'Remote Port fowarding' has already been designated. Either one can be designated"
+        exit 1
+      elif [[ -z "$2" ]] || [[ "$2" =~ ^-+ ]]; then
+        invalid "'Local Port fowarding' option requires an argument."
+        exit 1
+      elif [[ !("$2" =~ ^[0-9]+:.+:[0-9]+$) ]]; then
+        invalid "invalid argument."
+        exit 1
+      else
+        LOCAL=1
+        args=(${2//:/ })
+        LOCAL_PORT=${args[0]}
+        HOST=${args[1]}
+        REMOTE_PORT=${args[2]}
+        shift 2
+      fi
+      ;;
+    -R)
+      if [[ -n "$REMOTE" ]]; then
+        invalid "Duplicated 'Remote Port fowarding' option."
+        exit 1
+      elif [[ -n "$LOCAL" ]]; then
+        invalid "'Local Port fowarding' has already been designated. Either one can be designated"
+        exit 1
+      elif [[ -z "$2" ]] || [[ "$2" =~ ^-+ ]]; then
+        invalid "'Remote Port fowarding' option requires an argument."
+        exit 1
+      elif [[ !("$2" =~ ^[0-9]+:.+:[0-9]+$) ]]; then
+        invalid "invalid argument."
+        exit 1
+      else
+        REMOTE=1
+        args=(${2//:/ })
+        LOCAL_PORT=${args[0]}
+        HOST=${args[1]}
+        REMOTE_PORT=${args[2]}
+        shift 2
+      fi
+      ;;
+    -p)
+      if [[ -n "$PROFILE" ]]; then
+        invalid "Duplicated 'Profile' option."
+        exit 1
+      elif [[ -z "$2" ]] || [[ "$2" =~ ^-+ ]]; then
+        invalid "'Profile' option requires an argument."
+        exit 1
+      else
+        PROFILE=$2
+        shift 2
+      fi
+      ;;
+    -*)
+      invalid "Illegal option -- '$(echo $1 | sed 's/^-*//')'."
+      exit 1
+      ;;
+  esac
+done
+
+if [[ -n "$LOCAL" ]]; then
+  OPTS="--document-name AWS-StartPortForwardingSession\
+  --parameters '{\"portNumber\":[\"$REMOTE_PORT\"], \"localPortNumber\":[\"$LOCAL_PORT\"]}'"
+fi
+if [[ -n "$REMOTE" ]]; then
+  OPTS="--document-name AWS-StartPortForwardingSessionToRemoteHost\
+  --parameters '{\"host\":[\"$HOST\"],\"portNumber\":[\"$REMOTE_PORT\"], \"localPortNumber\":[\"$LOCAL_PORT\"]}'"
+fi
+
+PROFILE_OPT=""
+if [[ -n "$PROFILE" ]]; then
+  PROFILE_OPT=" --profile $PROFILE"
+fi
+
+INVENTORY=$(aws ssm get-inventory --filters "Key=AWS:InstanceInformation.InstanceStatus,Values=Terminated,Type=NotEqual" --output json $PROFILE_OPT | jq -r '.Entities[].Id' )
+
+EC2=$(aws ec2 describe-instances --instance-ids $INVENTORY --output json $PROFILE_OPT \
+--query 'Reservations[].Instances[*].{Id:InstanceId,Name:Tags[?Key==`Name`].Value,PublicIpAddress:PublicIpAddress}' | jq -r '.[][0] | (.Id) + "\t" + (.PublicIpAddress) + "\t" + (.Name[0])' | peco)
+
+INSTANCE_ID=$(echo ${EC2} | cut -f 1 -d " ")
+
+echo "aws ssm start-session --target ${INSTANCE_ID} ${OPTS} $PROFILE_OPT"
+eval "aws ssm start-session --target ${INSTANCE_ID} ${OPTS} $PROFILE_OPT"
